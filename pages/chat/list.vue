@@ -5,7 +5,7 @@
     <view class="header">
       <view class="title-row">
         <text class="title">消息</text>
-        <text class="subtitle">清除未读</text>
+        <text class="subtitle" @click="clearUnread">清除未读</text>
       </view>
       <view class="search-box">
         <text class="search-icon">🔍</text>
@@ -53,12 +53,13 @@ export default {
   data() {
     return {
       keyword: '',
+      currentRoomId: '',
       chats: [
-        { id: 1, name: '云浮石材严选', lastMsg: '您好，请问你有什么需要的吗？', time: '11:01', unread: 0, online: true },
-        { id: 2, name: '云浮石材加工-小李', lastMsg: '报价单已经发您了', time: '11:00', unread: 2, online: true },
-        { id: 3, name: '佛山石材批发-小王', lastMsg: '期待与您合作', time: '03/29', unread: 0, online: false },
-        { id: 4, name: '广州石材城-阿明', lastMsg: '样品明天可以到', time: '03/21', unread: 0, online: false },
-        { id: 5, name: '广州装修公司-小张', lastMsg: '收到，稍后回复您', time: '02/10', unread: 0, online: false }
+        { id: 1, roomId: '云浮石材严选', name: '云浮石材严选', lastMsg: '您好，请问你有什么需要的吗？', time: '11:01', unread: 0, online: true },
+        { id: 2, roomId: '云浮石材加工-小李', name: '云浮石材加工-小李', lastMsg: '报价单已经发您了', time: '11:00', unread: 2, online: true },
+        { id: 3, roomId: '佛山石材批发-小王', name: '佛山石材批发-小王', lastMsg: '期待与您合作', time: '03/29', unread: 0, online: false },
+        { id: 4, roomId: '广州石材城-阿明', name: '广州石材城-阿明', lastMsg: '样品明天可以到', time: '03/21', unread: 0, online: false },
+        { id: 5, roomId: '广州装修公司-小张', name: '广州装修公司-小张', lastMsg: '收到，稍后回复您', time: '02/10', unread: 0, online: false }
       ]
     };
   },
@@ -68,11 +69,49 @@ export default {
       return this.chats.filter((i) => i.name.includes(this.keyword) || i.lastMsg.includes(this.keyword));
     }
   },
+  onLoad() {
+    uni.$on('chat:last-message', this.updateChatItem);
+  },
+  onUnload() {
+    uni.$off('chat:last-message', this.updateChatItem);
+  },
   methods: {
     goChat(item) {
+      this.currentRoomId = item.roomId;
+      item.unread = 0;
       uni.navigateTo({
-        url: `/pages/chat/detail?name=${encodeURIComponent(item.name)}&online=${item.online ? 1 : 0}`
+        url: `/pages/chat/detail?name=${encodeURIComponent(item.name)}&online=${item.online ? 1 : 0}&roomId=${encodeURIComponent(item.roomId)}`
       });
+    },
+    clearUnread() {
+      this.chats = this.chats.map((chat) => ({ ...chat, unread: 0 }));
+    },
+    updateChatItem(payload) {
+      if (!payload?.roomId) return;
+      const index = this.chats.findIndex((chat) => chat.roomId === payload.roomId);
+      const unreadInc = payload.roomId === this.currentRoomId ? 0 : Number(payload.unreadInc || 0);
+
+      if (index === -1) {
+        this.chats.unshift({
+          id: Date.now(),
+          roomId: payload.roomId,
+          name: payload.name || payload.roomId,
+          lastMsg: payload.lastMsg || '[新消息]',
+          time: payload.time || '--:--',
+          unread: unreadInc,
+          online: true
+        });
+      } else {
+        const old = this.chats[index];
+        const next = {
+          ...old,
+          lastMsg: payload.lastMsg || old.lastMsg,
+          time: payload.time || old.time,
+          unread: (old.unread || 0) + unreadInc
+        };
+        this.chats.splice(index, 1);
+        this.chats.unshift(next);
+      }
     }
   }
 };

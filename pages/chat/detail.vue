@@ -6,12 +6,13 @@
       <view class="title-wrap">
         <text class="name">{{ chatName }}</text>
         <text class="online" :class="{ off: !isOnline }">{{ isOnline ? '在线' : '离线' }}</text>
+        <text class="conn-state" :class="socketState">{{ socketStateText }}</text>
       </view>
       <view class="actions">•••</view>
     </view>
 
     <scroll-view class="messages" scroll-y :scroll-into-view="scrollToId">
-      <view class="time-tip">14:37</view>
+      <view class="time-tip">{{ todayTime }}</view>
       <view
         v-for="msg in messageList"
         :key="msg.id"
@@ -21,7 +22,7 @@
       >
         <view class="avatar">{{ msg.from === 'me' ? '我' : '客' }}</view>
         <view>
-          <view class="bubble" :class="[msg.type, msg.from]">
+          <view class="bubble" :class="[msg.type === 'order' ? 'order' : '', msg.from]">
             <template v-if="msg.type === 'text'">{{ msg.content }}</template>
             <template v-else-if="msg.type === 'order'">
               <view class="order-title">{{ msg.content.title }}</view>
@@ -31,7 +32,7 @@
               <text>{{ msg.content }}</text>
             </template>
           </view>
-          <text class="read" v-if="msg.from === 'me'">{{ msg.read ? '已读' : '未读' }}</text>
+          <text class="read" v-if="msg.from === 'me'">{{ msg.read ? '已读' : '发送中' }}</text>
         </view>
       </view>
     </scroll-view>
@@ -72,6 +73,9 @@
 </template>
 
 <script>
+import { WS_BASE_URL } from '../../config/chat';
+import { getChatSocket } from '../../utils/chatSocket';
+
 let idSeed = 100;
 
 export default {
@@ -82,26 +86,31 @@ export default {
       draft: '',
       showPanel: false,
       scrollToId: '',
+      roomId: '',
+      socketState: 'connecting',
+      socketStateText: '连接中',
+      socket: null,
+      unsubscribeSocket: null,
+      todayTime: '',
       messageList: [
         { id: 1, from: 'me', type: 'text', content: '您好，请问你有什么需要的吗？', read: true },
-        { id: 2, from: 'other', type: 'text', content: '没有什么需要的', read: false },
-        {
-          id: 3,
-          from: 'me',
-          type: 'order',
-          content: {
-            title: '我已下单，等候你付款',
-            lines: ['订单编号：ORD94308819', '下单时间：2026/03/29 11:30:29', '买方：李建材', '卖方：小石', '数量：20个', '单价：160元']
-          },
-          read: false
-        }
+        { id: 2, from: 'other', type: 'text', content: '没有什么需要的', read: true }
       ]
     };
   },
   onLoad(query) {
     if (query.name) this.chatName = decodeURIComponent(query.name);
+    this.roomId = query.roomId || this.chatName;
     this.isOnline = Number(query.online || 1) === 1;
+    this.todayTime = this.formatClock(new Date());
+    this.connectSocket();
     this.scrollBottom();
+  },
+  onUnload() {
+    if (this.unsubscribeSocket) {
+      this.unsubscribeSocket();
+      this.unsubscribeSocket = null;
+    }
   },
   methods: {
     back() {
@@ -111,13 +120,45 @@ export default {
       idSeed += 1;
       return idSeed;
     },
+    connectSocket() {
+      const socketUrl = `${WS_BASE_URL}?roomId=${encodeURIComponent(this.roomId)}&userId=buyer001`;
+      this.socket = getChatSocket(socketUrl);
+      this.unsubscribeSocket = this.socket.subscribe(this.onSocketMessage);
+      this.socket.connect();
+      this.syncSocketStatus();
+    },
+    syncSocketStatus() {
+      const timer = setInterval(() => {
+        if (!this.socket) return;
+        if (this.socket.connected) {
+          this.socketState = 'online';
+          this.socketStateText = '已连接';
+        } else if (this.socket.connecting) {
+          this.socketState = 'connecting';
+          this.socketStateText = '连接中';
+        } else {
+          this.socketState = 'offline';
+          this.socketStateText = '重连中';
+        }
+      }, 500);
+      this.$once('hook:onUnload', () => clearInterval(timer));
+    },
     sendText() {
       const text = (this.draft || '').trim();
       if (!text) return;
-      this.messageList.push({ id: this.nextId(), from: 'me', type: 'text', content: text, read: false });
+      const id = this.nextId();
+      this.pushLocalMessage({ id, from: 'me', type: 'text', content: text, read: false });
+      this.sendSocketMessage({
+        msgId: id,
+        roomId: this.roomId,
+        type: 'text',
+        content: text,
+        from: 'me',
+        to: this.chatName,
+        ts: Date.now()
+      });
       this.draft = '';
       this.showPanel = false;
-      this.scrollBottom();
     },
     togglePanel() {
       this.showPanel = !this.showPanel;
@@ -129,17 +170,13 @@ export default {
         sourceType: useCamera ? ['camera'] : ['album'],
         success: (res) => {
           const filePath = res.tempFilePaths[0];
-          this.messageList.push({ id: this.nextId(), from: 'me', type: 'asset', content: `${useCamera ? '拍摄' : '图片'}: ${filePath.split('/').pop()}`, read: false });
-          this.showPanel = false;
-          this.scrollBottom();
+          this.sendAssetMessage('image', `${useCamera ? '拍摄' : '图片'}: ${filePath.split('/').pop()}`);
         }
       });
     },
     pickFile() {
       // #ifdef H5
-      this.messageList.push({ id: this.nextId(), from: 'me', type: 'asset', content: '文件: 当前平台请接入文件上传SDK', read: false });
-      this.showPanel = false;
-      this.scrollBottom();
+      this.sendAssetMessage('file', '文件: 当前平台请接入文件上传SDK');
       // #endif
 
       // #ifndef H5
@@ -148,9 +185,7 @@ export default {
         type: 'file',
         success: (res) => {
           const name = res.tempFiles?.[0]?.name || '未命名文件';
-          this.messageList.push({ id: this.nextId(), from: 'me', type: 'asset', content: `文件: ${name}`, read: false });
-          this.showPanel = false;
-          this.scrollBottom();
+          this.sendAssetMessage('file', `文件: ${name}`);
         }
       });
       // #endif
@@ -160,11 +195,65 @@ export default {
         sourceType: ['album', 'camera'],
         success: (res) => {
           const name = res.tempFilePath?.split('/').pop() || '视频文件';
-          this.messageList.push({ id: this.nextId(), from: 'me', type: 'asset', content: `视频: ${name}`, read: false });
-          this.showPanel = false;
-          this.scrollBottom();
+          this.sendAssetMessage('video', `视频: ${name}`);
         }
       });
+    },
+    sendAssetMessage(kind, content) {
+      const id = this.nextId();
+      this.pushLocalMessage({ id, from: 'me', type: 'asset', content, read: false });
+      this.sendSocketMessage({
+        msgId: id,
+        roomId: this.roomId,
+        type: kind,
+        content,
+        from: 'me',
+        to: this.chatName,
+        ts: Date.now()
+      });
+      this.showPanel = false;
+    },
+    sendSocketMessage(payload) {
+      if (!this.socket) return;
+      this.socket.send(payload);
+      uni.$emit('chat:last-message', {
+        roomId: this.roomId,
+        name: this.chatName,
+        lastMsg: payload.content,
+        time: this.formatClock(new Date(payload.ts)),
+        unreadInc: 0
+      });
+      this.scrollBottom();
+    },
+    onSocketMessage(payload) {
+      if (!payload || payload.type === 'ping') return;
+
+      if (payload.from === 'me') {
+        const idx = this.messageList.findIndex((msg) => msg.id === payload.msgId);
+        if (idx > -1) this.$set(this.messageList[idx], 'read', true);
+        return;
+      }
+
+      const content = payload.content || '[新消息]';
+      this.pushLocalMessage({
+        id: payload.msgId || this.nextId(),
+        from: 'other',
+        type: payload.type === 'order' ? 'order' : 'text',
+        content,
+        read: true
+      });
+
+      uni.$emit('chat:last-message', {
+        roomId: this.roomId,
+        name: this.chatName,
+        lastMsg: typeof content === 'string' ? content : '[订单消息]',
+        time: this.formatClock(new Date(payload.ts || Date.now())),
+        unreadInc: 1
+      });
+    },
+    pushLocalMessage(msg) {
+      this.messageList.push(msg);
+      this.scrollBottom();
     },
     scrollBottom() {
       this.$nextTick(() => {
@@ -173,6 +262,11 @@ export default {
           this.scrollToId = `m-${last.id}`;
         }
       });
+    },
+    formatClock(date) {
+      const h = `${date.getHours()}`.padStart(2, '0');
+      const m = `${date.getMinutes()}`.padStart(2, '0');
+      return `${h}:${m}`;
     }
   }
 };
@@ -205,6 +299,7 @@ export default {
   display: flex;
   align-items: baseline;
   margin-left: 14rpx;
+  gap: 12rpx;
 }
 .name {
   font-size: 34rpx;
@@ -212,12 +307,21 @@ export default {
   color: #2f3d5b;
 }
 .online {
-  margin-left: 12rpx;
   color: #1fcb72;
   font-size: 24rpx;
 }
 .online.off {
   color: #95a2bd;
+}
+.conn-state {
+  font-size: 22rpx;
+  color: #8a99b8;
+}
+.conn-state.online {
+  color: #1fcb72;
+}
+.conn-state.offline {
+  color: #ff8f3c;
 }
 .actions {
   width: 80rpx;
