@@ -1,0 +1,22 @@
+{
+  "pages": [
+    {
+      "path": "pages/chat/list",
+      "style": {
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/chat/detail",
+      "style": {
+        "navigationStyle": "custom"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "聊天",
+    "navigationBarBackgroundColor": "#F8F8F8",
+    "backgroundColor": "#eef3ff"
+  }
+}
